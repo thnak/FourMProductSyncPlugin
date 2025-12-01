@@ -10,4 +10,8 @@
       <PackageReference Include="VaultForce.Infrastructure" Version="3.4.0" />
     </ItemGroup>
 
+    <ItemGroup>
+      <ProjectReference Include="..\..\FanstaticFourM\VaultForge\VaultForce.Domain\VaultForce.Domain.csproj" />
+    </ItemGroup>
+
 </Project>
