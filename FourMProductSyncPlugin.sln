@@ -2,10 +2,6 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FourMProductSyncPlugin", "FourMProductSyncPlugin\FourMProductSyncPlugin.csproj", "{E55F68E6-DBD2-48EF-B432-4F306E240B7A}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VaultForce.Sdk", "..\FanstaticFourM\VaultForge\VaultForce.Sdk\VaultForce.Sdk.csproj", "{A5CE6935-2B83-425E-8798-8FB4AEEEB7EC}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VaultForce.Application", "..\FanstaticFourM\VaultForge\VaultForce.Application\VaultForce.Application.csproj", "{93A62C11-FFB8-4251-89CD-660261EE44CD}"
-EndProject
 
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -21,13 +17,5 @@ Global
 		{3A6B8147-07B9-4120-A199-B1E3D75425E2}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{3A6B8147-07B9-4120-A199-B1E3D75425E2}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{3A6B8147-07B9-4120-A199-B1E3D75425E2}.Release|Any CPU.Build.0 = Release|Any CPU
-		{A5CE6935-2B83-425E-8798-8FB4AEEEB7EC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{A5CE6935-2B83-425E-8798-8FB4AEEEB7EC}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{A5CE6935-2B83-425E-8798-8FB4AEEEB7EC}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{A5CE6935-2B83-425E-8798-8FB4AEEEB7EC}.Release|Any CPU.Build.0 = Release|Any CPU
-		{93A62C11-FFB8-4251-89CD-660261EE44CD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{93A62C11-FFB8-4251-89CD-660261EE44CD}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{93A62C11-FFB8-4251-89CD-660261EE44CD}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{93A62C11-FFB8-4251-89CD-660261EE44CD}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

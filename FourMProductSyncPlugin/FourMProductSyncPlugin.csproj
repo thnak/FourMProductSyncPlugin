@@ -9,7 +9,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="VaultForce.Infrastructure" Version="3.4.1.3" />
+      <PackageReference Include="VaultForce.Infrastructure" Version="3.4.1.4" />
     </ItemGroup>
 
 </Project>

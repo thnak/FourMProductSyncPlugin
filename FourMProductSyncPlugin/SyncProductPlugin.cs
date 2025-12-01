@@ -67,7 +67,11 @@ public class SyncProductPlugin : IParameterPlugin
                     Name = productModel.ProductName,
                     Id = ObjectId.Parse(productModel.ObjectId)
                 });
-            await commandMediator.SendAsync(createCommand, cancellationToken: cancellationToken);
+            var re = await commandMediator.SendAsync(createCommand, cancellationToken: cancellationToken);
+            if (!re.IsSuccess)
+            {
+                logger.LogError($"Create product {productModel.ProductCode} failed: {re.Message}");
+            }
         }
         return Result<object?>.Success(null);
     }
@@ -111,7 +115,11 @@ public class SyncProductPlugin : IParameterPlugin
             };
             stationEntities.Add(stationEntity);
             CreateEntityCommand<StationEntity> createCommand = new CreateEntityCommand<StationEntity>(stationEntity);
-            await commandMediator.SendAsync(createCommand, cancellationToken: cancellationToken);
+            var re = await commandMediator.SendAsync(createCommand, cancellationToken: cancellationToken);
+            if (!re.IsSuccess)
+            {
+                logger.LogError($"Create station {stationEntity.Code} failed: {re.Message}");
+            }
         }
         return Result<List<StationEntity>>.Success(stationEntities);
     }
@@ -144,7 +152,7 @@ public class SyncProductPlugin : IParameterPlugin
         if (getResult == null)
             return Result<List<StationGroupEntity>>.Failure("Failed to fetch products", ErrorType.ApiError);
 
-        await commandMediator.SendAsync(new DeleteEntityCommand<StationGroupStationMapping>(x => true), cancellationToken: cancellationToken);
+        await commandMediator.SendAsync(new DeleteManyEntityCommand<StationGroupStationMapping>(x => true), cancellationToken: cancellationToken);
         List<StationGroupEntity> stationGroupEntities = new List<StationGroupEntity>(getResult.Count);
         foreach (var stationGroupModel in getResult)
         {
@@ -169,7 +177,11 @@ public class SyncProductPlugin : IParameterPlugin
             foreach (var mapping in stationGroupStations)
             {
                 CreateEntityCommand<StationGroupStationMapping> mappingCreateCommand = new CreateEntityCommand<StationGroupStationMapping>(mapping);
-                await commandMediator.SendAsync(mappingCreateCommand, cancellationToken: cancellationToken);
+                var re = await commandMediator.SendAsync(mappingCreateCommand, cancellationToken: cancellationToken);
+                if (!re.IsSuccess)
+                {
+                    logger.LogError($"Create mapping for StationGroup {stationGroupEntity.Code} and Station {mapping.StationId} failed: {re.Message}");
+                }
             }
 
             var stationInGroups = stationEntities.Where(x => stationGroupModel.StationList.Contains(x.Code));
@@ -177,9 +189,19 @@ public class SyncProductPlugin : IParameterPlugin
             {
                 station.StationGroup = stationGroupEntity.Id;
                 var updateCommand = new UpdateEntityCommand<StationEntity>(station);
-                await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
+                var re = await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
+                if (!re.IsSuccess)
+                {
+                    logger.LogError($"Update station {station.Code} failed: {re.Message}");
+                }
             }
         }
         return Result<List<StationGroupEntity>>.Success(stationGroupEntities);
+    }
+    
+    private static async Task MapStationToGroupAsync(List<StationEntity> stationEntities, List<StationGroupModel> stationGroupModels,
+        ICommandMediator commandMediator, CancellationToken cancellationToken)
+    {
+        
     }
 }
