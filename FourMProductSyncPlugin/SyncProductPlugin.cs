@@ -152,7 +152,12 @@ public class SyncProductPlugin : IParameterPlugin
         if (getResult == null)
             return Result<List<StationGroupEntity>>.Failure("Failed to fetch products", ErrorType.ApiError);
 
-        await commandMediator.SendAsync(new DeleteManyEntityCommand<StationGroupStationMapping>(x => true), cancellationToken: cancellationToken);
+        var deleteRes = await commandMediator.SendAsync(new DeleteManyEntityCommand<StationGroupStationMapping>(x => true), cancellationToken: cancellationToken);
+        if (!deleteRes.IsSuccess)
+        {
+            logger.LogError("Failed to delete existing StationGroupStationMapping: {Message}", deleteRes.Message);
+        }
+        
         List<StationGroupEntity> stationGroupEntities = new List<StationGroupEntity>(getResult.Count);
         foreach (var stationGroupModel in getResult)
         {
@@ -184,7 +189,8 @@ public class SyncProductPlugin : IParameterPlugin
                 }
             }
 
-            var stationInGroups = stationEntities.Where(x => stationGroupModel.StationList.Contains(x.Code));
+            var stationInGroups = stationEntities.Where(x => stationGroupModel.StationList.Contains(x.Code)).ToList();
+            logger.LogInformation($"Found {stationGroupEntities.Count} StationGroups");
             foreach (var station in stationInGroups)
             {
                 station.StationGroup = stationGroupEntity.Id;
