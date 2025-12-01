@@ -116,7 +116,7 @@ public class SyncProductPlugin : IParameterPlugin
         return Result<List<StationEntity>>.Success(stationEntities);
     }
     
-    private static async Task<Result<object?>> SyncStationGroupsAsync(FieldParams fieldParams, ILogger<SyncProductPlugin> logger,
+    private static async Task<Result<List<StationGroupEntity>>> SyncStationGroupsAsync(FieldParams fieldParams, ILogger<SyncProductPlugin> logger,
         ICommandMediator commandMediator, HttpClient httpClient, List<StationEntity> stationEntities, CancellationToken cancellationToken)
     {
         var baseUri = fieldParams.TryGet<string>("baseUri");
@@ -124,13 +124,13 @@ public class SyncProductPlugin : IParameterPlugin
         if (string.IsNullOrEmpty(baseUri))
         {
             logger.LogError("Base Uri are empty");
-            return Result<object?>.Failure("baseUri is empty", ErrorType.InvalidArgument);
+            return Result<List<StationGroupEntity>>.Failure("baseUri is empty", ErrorType.InvalidArgument);
         }
 
         if (string.IsNullOrEmpty(requestEndpoint))
         {
             logger.LogError("requestEndpoint is empty");
-            return Result<object?>.Failure("requestEndpoint is empty", ErrorType.InvalidArgument);
+            return Result<List<StationGroupEntity>>.Failure("requestEndpoint is empty", ErrorType.InvalidArgument);
         }
 
         var request = new FluentRequestBuilder(baseUri, httpClient);
@@ -142,9 +142,10 @@ public class SyncProductPlugin : IParameterPlugin
         });
         var getResult = await request.GetAsync<List<StationGroupModel>>(cancellationToken);
         if (getResult == null)
-            return Result<object?>.Failure("Failed to fetch products", ErrorType.ApiError);
+            return Result<List<StationGroupEntity>>.Failure("Failed to fetch products", ErrorType.ApiError);
 
         await commandMediator.SendAsync(new DeleteEntityCommand<StationGroupStationMapping>(x => true), cancellationToken: cancellationToken);
+        List<StationGroupEntity> stationGroupEntities = new List<StationGroupEntity>(getResult.Count);
         foreach (var stationGroupModel in getResult)
         {
             var stationGroupEntity = new StationGroupEntity()
@@ -153,6 +154,7 @@ public class SyncProductPlugin : IParameterPlugin
                 Name = stationGroupModel.GroupName,
                 Id = ObjectId.Parse(stationGroupModel.ObjectId)
             };
+            stationGroupEntities.Add(stationGroupEntity);
             CreateEntityCommand<StationGroupEntity> createCommand = new CreateEntityCommand<StationGroupEntity>(stationGroupEntity);
             await commandMediator.SendAsync(createCommand, cancellationToken: cancellationToken);
             
@@ -169,7 +171,15 @@ public class SyncProductPlugin : IParameterPlugin
                 CreateEntityCommand<StationGroupStationMapping> mappingCreateCommand = new CreateEntityCommand<StationGroupStationMapping>(mapping);
                 await commandMediator.SendAsync(mappingCreateCommand, cancellationToken: cancellationToken);
             }
+
+            var stationInGroups = stationEntities.Where(x => stationGroupModel.StationList.Contains(x.Code));
+            foreach (var station in stationInGroups)
+            {
+                station.StationGroup = stationGroupEntity.Id;
+                var updateCommand = new UpdateEntityCommand<StationEntity>(station);
+                await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
+            }
         }
-        return Result<object?>.Success(null);
+        return Result<List<StationGroupEntity>>.Success(stationGroupEntities);
     }
 }
