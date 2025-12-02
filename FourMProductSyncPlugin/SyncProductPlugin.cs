@@ -5,6 +5,7 @@ using MongoDB.Bson;
 using VaultForce.Application.Common.Interfaces.Plugin;
 using VaultForce.Application.MessageBus.Generic.Command;
 using VaultForce.Domain.Entities.Productions;
+using VaultForce.Domain.Entities.User;
 using VaultForce.Shared.Enums;
 using VaultForce.Shared.Generals;
 using VaultForce.Shared.Generals.Results;
@@ -26,7 +27,7 @@ public class SyncProductPlugin : IParameterPlugin
         if(!createStationResult.IsSuccess)
             return Result<object?>.Failure(createStationResult.Message, createStationResult.ErrorType);
         await SyncStationGroupsAsync(fieldParams, logger, commandMediator, httpClient, createStationResult.Value, cancellationToken);
-        
+        await SyncDepartmentAsync(fieldParams, logger, commandMediator, httpClient, cancellationToken);
         return Result<object?>.Success(null);
     }
 
@@ -34,24 +35,24 @@ public class SyncProductPlugin : IParameterPlugin
         ICommandMediator commandMediator, HttpClient httpClient, CancellationToken cancellationToken)
     {
         var baseUri = fieldParams.TryGet<string>("baseUri");
-        var productRequestEndpoint = fieldParams.TryGet<string>("requestProductEndpoint");
+        var requestEndpoint = fieldParams.TryGet<string>("requestProductEndpoint");
         if (string.IsNullOrEmpty(baseUri))
         {
             logger.LogError("Base Uri are empty");
             return Result<object?>.Failure("baseUri is empty", ErrorType.InvalidArgument);
         }
 
-        if (string.IsNullOrEmpty(productRequestEndpoint))
+        if (string.IsNullOrEmpty(requestEndpoint))
         {
             logger.LogError("requestEndpoint is empty");
             return Result<object?>.Failure("requestEndpoint is empty", ErrorType.InvalidArgument);
         }
 
         var request = new FluentRequestBuilder(baseUri, httpClient);
-        request.SetApiPatternPath(productRequestEndpoint);
+        request.SetApiPatternPath(requestEndpoint).AddJsonConverts([..JsonContextSerial.Default.Options.Converters]);
         request.OnException(e =>
         {
-            logger.LogError(e, "Error occurred while fetching products from {RequestEndpoint}", productRequestEndpoint);
+            logger.LogError(e, "Error occurred while fetching products from {RequestEndpoint}", requestEndpoint);
             return Task.CompletedTask;
         });
         var getResult = await request.GetAsync<List<ProductModel>>(cancellationToken);
@@ -60,17 +61,22 @@ public class SyncProductPlugin : IParameterPlugin
 
         foreach (var productModel in getResult)
         {
-            CreateEntityCommand<ProductEntity> createCommand = new CreateEntityCommand<ProductEntity>(
-                new ProductEntity()
-                {
-                    Code = productModel.ProductCode,
-                    Name = productModel.ProductName,
-                    Id = ObjectId.Parse(productModel.ObjectId)
-                });
+            var productEntity = new ProductEntity()
+            {
+                Code = productModel.ProductCode,
+                Name = productModel.ProductName,
+                Id = ObjectId.Parse(productModel.ObjectId)
+            };
+            CreateEntityCommand<ProductEntity> createCommand = new CreateEntityCommand<ProductEntity>(productEntity);
             var re = await commandMediator.SendAsync(createCommand, cancellationToken: cancellationToken);
             if (!re.IsSuccess)
             {
                 logger.LogError($"Create product {productModel.ProductCode} failed: {re.Message}");
+            }
+            else
+            {
+                UpdateEntityCommand<ProductEntity> updateCommand = new UpdateEntityCommand<ProductEntity>(productEntity);
+                await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
             }
         }
         return Result<object?>.Success(null);
@@ -94,7 +100,7 @@ public class SyncProductPlugin : IParameterPlugin
         }
 
         var request = new FluentRequestBuilder(baseUri, httpClient);
-        request.SetApiPatternPath(requestEndpoint);
+        request.SetApiPatternPath(requestEndpoint).AddJsonConverts([..JsonContextSerial.Default.Options.Converters]);
         request.OnException(e =>
         {
             logger.LogError(e, "Error occurred while fetching products from {RequestEndpoint}", requestEndpoint);
@@ -120,6 +126,11 @@ public class SyncProductPlugin : IParameterPlugin
             {
                 logger.LogError($"Create station {stationEntity.Code} failed: {re.Message}");
             }
+            else
+            {
+                UpdateEntityCommand<StationEntity> updateCommand = new UpdateEntityCommand<StationEntity>(stationEntity);
+                await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
+            }
         }
         return Result<List<StationEntity>>.Success(stationEntities);
     }
@@ -142,7 +153,7 @@ public class SyncProductPlugin : IParameterPlugin
         }
 
         var request = new FluentRequestBuilder(baseUri, httpClient);
-        request.SetApiPatternPath(requestEndpoint);
+        request.SetApiPatternPath(requestEndpoint).AddJsonConverts([..JsonContextSerial.Default.Options.Converters]);
         request.OnException(e =>
         {
             logger.LogError(e, "Error occurred while fetching products from {RequestEndpoint}", requestEndpoint);
@@ -169,7 +180,16 @@ public class SyncProductPlugin : IParameterPlugin
             };
             stationGroupEntities.Add(stationGroupEntity);
             CreateEntityCommand<StationGroupEntity> createCommand = new CreateEntityCommand<StationGroupEntity>(stationGroupEntity);
-            await commandMediator.SendAsync(createCommand, cancellationToken: cancellationToken);
+            var createResult = await commandMediator.SendAsync(createCommand, cancellationToken: cancellationToken);
+            if (!createResult.IsSuccess)
+            {
+                logger.LogError($"Create station group {stationGroupEntity.Code} failed: {createResult.Message}");
+                UpdateEntityCommand<StationGroupEntity> updateCommand = new UpdateEntityCommand<StationGroupEntity>(stationGroupEntity);
+                var updateResult = await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
+                if (!updateResult.IsSuccess)                {
+                    logger.LogError($"Update station group {stationGroupEntity.Code} failed: {updateResult.Message}");
+                }
+            }
             
             var stationGroupStations = stationGroupModel.StationList
                 .Select(stationCode => stationEntities.FirstOrDefault(se => se.Code == stationCode))
@@ -204,10 +224,55 @@ public class SyncProductPlugin : IParameterPlugin
         }
         return Result<List<StationGroupEntity>>.Success(stationGroupEntities);
     }
-    
-    private static async Task MapStationToGroupAsync(List<StationEntity> stationEntities, List<StationGroupModel> stationGroupModels,
-        ICommandMediator commandMediator, CancellationToken cancellationToken)
+
+    private static async Task<Result<List<DepartmentEntity>>> SyncDepartmentAsync(FieldParams fieldParams,
+        ILogger<SyncProductPlugin> logger,
+        ICommandMediator commandMediator, HttpClient httpClient, CancellationToken cancellationToken)
     {
-        
+        var baseUri = fieldParams.TryGet<string>("baseUri");
+        var requestEndpoint = fieldParams.TryGet<string>("requestDepartmentEndpoint");
+        if (string.IsNullOrEmpty(baseUri))
+        {
+            logger.LogError("Base Uri are empty");
+            return Result<List<DepartmentEntity>>.Failure("baseUri is empty", ErrorType.InvalidArgument);
+        }
+
+        if (string.IsNullOrEmpty(requestEndpoint))
+        {
+            logger.LogError("requestEndpoint is empty");
+            return Result<List<DepartmentEntity>>.Failure("requestEndpoint is empty", ErrorType.InvalidArgument);
+        }
+
+        var request = new FluentRequestBuilder(baseUri, httpClient);
+        request.SetApiPatternPath(requestEndpoint).AddJsonConverts([..JsonContextSerial.Default.Options.Converters]);
+        request.OnException(e =>
+        {
+            logger.LogError(e, "Error occurred while fetching products from {RequestEndpoint}", requestEndpoint);
+            return Task.CompletedTask;
+        });
+        var getResult = await request.GetAsync<List<FixAssetDepartmentModel>>(cancellationToken);
+        if (getResult == null)
+            return Result<List<DepartmentEntity>>.Failure("Failed to fetch products", ErrorType.ApiError);
+        List<DepartmentEntity> departmentEntities = new List<DepartmentEntity>(getResult.Count);
+        foreach (var departmentModel in getResult)
+        {
+            var departmentEntity = new DepartmentEntity()
+            {
+                Code = departmentModel.DepartmentCode,
+                Name = departmentModel.DepartmentName,
+                Id = ObjectId.Parse(departmentModel.ObjectId)
+            };
+            departmentEntities.Add(departmentEntity);
+            CreateEntityCommand<DepartmentEntity> createCommand =
+                new CreateEntityCommand<DepartmentEntity>(departmentEntity);
+            var re = await commandMediator.SendAsync(createCommand, cancellationToken: cancellationToken);
+            if (!re.IsSuccess)
+            {
+                logger.LogError($"Create department {departmentEntity.Code} failed: {re.Message}");
+            }
+            UpdateEntityCommand<DepartmentEntity> updateCommand = new UpdateEntityCommand<DepartmentEntity>(departmentEntity);
+            await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
+        }
+        return Result<List<DepartmentEntity>>.Success(departmentEntities);
     }
 }
