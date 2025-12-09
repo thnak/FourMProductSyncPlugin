@@ -48,7 +48,7 @@ public class SyncProductPlugin : IParameterPlugin
 
         if (string.IsNullOrEmpty(requestEndpoint))
         {
-            logger.LogError("requestEndpoint is empty");
+            logger.LogError("requestZoneEndpoint is empty");
             return Result<List<ZoneEntity>>.Failure("baseUri is empty", ErrorType.InvalidArgument);
         }
 
@@ -56,7 +56,7 @@ public class SyncProductPlugin : IParameterPlugin
         request.SetApiPatternPath(requestEndpoint).AddJsonConverts([..JsonContextSerial.Default.Options.Converters]);
         request.OnException(e =>
         {
-            logger.LogError(e, "Error occurred while fetching products from {RequestEndpoint}", requestEndpoint);
+            logger.LogError(e, "Error occurred while fetching zone from {RequestEndpoint}", requestEndpoint);
             return Task.CompletedTask;
         });
         var getResult = await request.GetAsync<List<ZoneModel>>(cancellationToken);
@@ -71,6 +71,7 @@ public class SyncProductPlugin : IParameterPlugin
                 Name = productModel.ZoneName,
                 Id = ObjectId.Parse(productModel.ObjectId)
             };
+            zoneEntities.Add(productEntity);
             CreateEntityCommand<ZoneEntity> createCommand = new CreateEntityCommand<ZoneEntity>(productEntity);
             var re = await commandMediator.SendAsync(createCommand, cancellationToken: cancellationToken);
             if (!re.IsSuccess)
@@ -163,7 +164,15 @@ public class SyncProductPlugin : IParameterPlugin
         var getResult = await request.GetAsync<List<StationModel>>(cancellationToken);
         if (getResult == null)
             return Result<List<StationEntity>>.Failure("Failed to fetch products", ErrorType.ApiError);
+        var deleteZoneMappingRes = await commandMediator.SendAsync(
+            new DeleteManyEntityCommand<ZoneStationMapping>(_ => true),
+            cancellationToken: cancellationToken);
 
+        if (!deleteZoneMappingRes.IsSuccess)
+        {
+            logger.LogError("Failed to delete existing ZoneStationMapping: {Message}",
+                deleteZoneMappingRes.Message);
+        }
         List<StationEntity> stationEntities = new List<StationEntity>(getResult.Count);
         foreach (var stationModel in getResult)
         {
@@ -173,7 +182,23 @@ public class SyncProductPlugin : IParameterPlugin
                 Name = stationModel.StationName,
                 Id = ObjectId.Parse(stationModel.ObjectId)
             };
-            stationEntities.Add(stationEntity);
+            if (!string.IsNullOrWhiteSpace(stationModel.ZoneCode))
+            {
+                var matchedZone = zoneEntities
+                    .FirstOrDefault(z =>
+                        string.Equals(z.Code, stationModel.ZoneCode,
+                            StringComparison.OrdinalIgnoreCase));
+
+                if (matchedZone != null)
+                {
+                    stationEntity.ZoneId = matchedZone.Id;
+                }
+                else
+                {
+                    logger.LogWarning("No Zone found for ZoneCode {ZoneCode} (Station {StationCode})",
+                        stationModel.ZoneCode, stationModel.StationCode);
+                }
+            }
             CreateEntityCommand<StationEntity> createCommand = new CreateEntityCommand<StationEntity>(stationEntity);
             var re = await commandMediator.SendAsync(createCommand, cancellationToken: cancellationToken);
             if (!re.IsSuccess)
@@ -185,34 +210,22 @@ public class SyncProductPlugin : IParameterPlugin
                     logger.LogError($"Update station group {stationEntity.Code} failed: {updateResult.Message}");
                 }            
             }
-            var zoneStationMappings = stationModel.ZoneCode
-                .Select(code => zoneEntities.FirstOrDefault(z => z.Code == code.ToString()))
-                .Where(z => z != null)
-                .Select(z => new ZoneStationMapping
-                {
-                    ZoneId = z!.Id,               // Id của Zone
-                    StationId = stationEntity.Id, // Id của Station
-                })
-                .ToList();
-            foreach (var mapping in zoneStationMappings)
+            stationEntities.Add(stationEntity);
+            if (stationEntity.ZoneId != ObjectId.Empty)
             {
-                CreateEntityCommand<ZoneStationMapping> mappingCreateCommand = new CreateEntityCommand<ZoneStationMapping>(mapping);
-                var results = await commandMediator.SendAsync(mappingCreateCommand, cancellationToken: cancellationToken);
-                if (!results.IsSuccess)
+                var mapping = new ZoneStationMapping
                 {
-                    logger.LogError($"Create mapping for StationGroup {stationEntity.Code} and Station {mapping.StationId} failed: {re.Message}");
-                }
-            }
-            var stationInGroups = stationEntities.Where(x => x.ZoneId == stationEntity.ZoneId).ToList();
-            logger.LogInformation($"Found {stationEntities.Count} StationGroups");
-            foreach (var station in stationInGroups)
-            {
-                station.StationGroup = stationEntity.Id;
-                var updateCommand = new UpdateEntityCommand<StationEntity>(station);
-                var me = await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
-                if (!me.IsSuccess)
+                    ZoneId = stationEntity.ZoneId,
+                    StationId = stationEntity.Id
+                };
+
+                var mappingCreateCommand = new CreateEntityCommand<ZoneStationMapping>(mapping);
+                var mappingResult = await commandMediator.SendAsync(mappingCreateCommand, cancellationToken: cancellationToken);
+                if (!mappingResult.IsSuccess)
                 {
-                    logger.LogError($"Update station {station.Code} failed: {re.Message}");
+                    logger.LogError(
+                        "Create mapping for ZoneId {ZoneId} and Station {StationCode} failed: {Message}",
+                        mapping.ZoneId, stationEntity.Code, mappingResult.Message);
                 }
             }
             
