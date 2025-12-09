@@ -1,4 +1,5 @@
-﻿using LiteBus.Commands.Abstractions;
+﻿using Amazon.Runtime;
+using LiteBus.Commands.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using MongoDB.Bson;
@@ -6,10 +7,10 @@ using VaultForce.Application.Common.Interfaces.Plugin;
 using VaultForce.Application.MessageBus.Generic.Command;
 using VaultForce.Domain.Entities.Productions;
 using VaultForce.Domain.Entities.User;
-using VaultForce.Shared.Enums;
 using VaultForce.Shared.Generals;
 using VaultForce.Shared.Generals.Results;
 using VaultForce.Shared.Helpers;
+using ErrorType = VaultForce.Shared.Enums.ErrorType;
 
 namespace FourMProductSyncPlugin;
 
@@ -23,7 +24,10 @@ public class SyncProductPlugin : IParameterPlugin
         var logger = serviceProvider.GetRequiredService<ILogger<SyncProductPlugin>>();
 
         await SyncProductsAsync(fieldParams, logger, commandMediator, httpClient, cancellationToken);
-        var createStationResult = await SyncStationsAsync(fieldParams, logger, commandMediator, httpClient, cancellationToken);
+        var createZone = await SyncZoneAsync(fieldParams, logger, commandMediator, httpClient, cancellationToken);
+        if (!createZone.IsSuccess)
+            return Result<object?>.Failure(createZone.Message, createZone.ErrorType);
+        var createStationResult = await SyncStationsAsync(fieldParams, logger, commandMediator, httpClient, createZone.Value, cancellationToken);
         if(!createStationResult.IsSuccess)
             return Result<object?>.Failure(createStationResult.Message, createStationResult.ErrorType);
         await SyncStationGroupsAsync(fieldParams, logger, commandMediator, httpClient, createStationResult.Value, cancellationToken);
@@ -31,6 +35,56 @@ public class SyncProductPlugin : IParameterPlugin
         return Result<object?>.Success(null);
     }
 
+    private static async  Task<Result<List<ZoneEntity>>> SyncZoneAsync(FieldParams fieldParams, ILogger<SyncProductPlugin> logger,
+        ICommandMediator commandMediator, HttpClient httpClient, CancellationToken cancellationToken)
+    {
+        var baseUri = fieldParams.TryGet<string>("baseUri");
+        var requestEndpoint = fieldParams.TryGet<string>("requestZoneEndpoint");
+        if (string.IsNullOrEmpty(baseUri))
+        {
+            logger.LogError("Base Uri are empty");
+            return Result<List<ZoneEntity>>.Failure("baseUri is empty", ErrorType.InvalidArgument);
+        }
+
+        if (string.IsNullOrEmpty(requestEndpoint))
+        {
+            logger.LogError("requestEndpoint is empty");
+            return Result<List<ZoneEntity>>.Failure("baseUri is empty", ErrorType.InvalidArgument);
+        }
+
+        var request = new FluentRequestBuilder(baseUri, httpClient);
+        request.SetApiPatternPath(requestEndpoint).AddJsonConverts([..JsonContextSerial.Default.Options.Converters]);
+        request.OnException(e =>
+        {
+            logger.LogError(e, "Error occurred while fetching products from {RequestEndpoint}", requestEndpoint);
+            return Task.CompletedTask;
+        });
+        var getResult = await request.GetAsync<List<ZoneModel>>(cancellationToken);
+        if (getResult == null)
+            return Result<List<ZoneEntity>>.Failure("baseUri is empty", ErrorType.InvalidArgument);
+        List<ZoneEntity> zoneEntities = new List<ZoneEntity>(getResult.Count);
+        foreach (var productModel in getResult)
+        {
+            var productEntity = new ZoneEntity()
+            {
+                Code = productModel.ZoneCode,
+                Name = productModel.ZoneName,
+                Id = ObjectId.Parse(productModel.ObjectId)
+            };
+            CreateEntityCommand<ZoneEntity> createCommand = new CreateEntityCommand<ZoneEntity>(productEntity);
+            var re = await commandMediator.SendAsync(createCommand, cancellationToken: cancellationToken);
+            if (!re.IsSuccess)
+            {
+                logger.LogError($"Create product {productModel.ZoneCode} failed: {re.Message}");
+            }
+            else
+            {
+                UpdateEntityCommand<ZoneEntity> updateCommand = new UpdateEntityCommand<ZoneEntity>(productEntity);
+                await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
+            }
+        }
+        return Result<List<ZoneEntity>>.Success(zoneEntities);
+    }
     private static async Task<Result<object?>> SyncProductsAsync(FieldParams fieldParams, ILogger<SyncProductPlugin> logger,
         ICommandMediator commandMediator, HttpClient httpClient, CancellationToken cancellationToken)
     {
@@ -83,7 +137,7 @@ public class SyncProductPlugin : IParameterPlugin
     }
 
     private static async Task<Result<List<StationEntity>>> SyncStationsAsync(FieldParams fieldParams, ILogger<SyncProductPlugin> logger,
-        ICommandMediator commandMediator, HttpClient httpClient, CancellationToken cancellationToken)
+        ICommandMediator commandMediator, HttpClient httpClient, List<ZoneEntity> zoneEntities, CancellationToken cancellationToken)
     {
         var baseUri = fieldParams.TryGet<string>("baseUri");
         var requestEndpoint = fieldParams.TryGet<string>("requestStationEndpoint");
@@ -124,13 +178,44 @@ public class SyncProductPlugin : IParameterPlugin
             var re = await commandMediator.SendAsync(createCommand, cancellationToken: cancellationToken);
             if (!re.IsSuccess)
             {
-                logger.LogError($"Create station {stationEntity.Code} failed: {re.Message}");
-            }
-            else
-            {
+                logger.LogError($"Create station group {stationEntity.Code} failed: {re.Message}");
                 UpdateEntityCommand<StationEntity> updateCommand = new UpdateEntityCommand<StationEntity>(stationEntity);
-                await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
+                var updateResult = await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
+                if (!updateResult.IsSuccess)                {
+                    logger.LogError($"Update station group {stationEntity.Code} failed: {updateResult.Message}");
+                }            
             }
+            var zoneStationMappings = stationModel.ZoneCode
+                .Select(code => zoneEntities.FirstOrDefault(z => z.Code == code.ToString()))
+                .Where(z => z != null)
+                .Select(z => new ZoneStationMapping
+                {
+                    ZoneId = z!.Id,               // Id của Zone
+                    StationId = stationEntity.Id, // Id của Station
+                })
+                .ToList();
+            foreach (var mapping in zoneStationMappings)
+            {
+                CreateEntityCommand<ZoneStationMapping> mappingCreateCommand = new CreateEntityCommand<ZoneStationMapping>(mapping);
+                var results = await commandMediator.SendAsync(mappingCreateCommand, cancellationToken: cancellationToken);
+                if (!results.IsSuccess)
+                {
+                    logger.LogError($"Create mapping for StationGroup {stationEntity.Code} and Station {mapping.StationId} failed: {re.Message}");
+                }
+            }
+            var stationInGroups = stationEntities.Where(x => x.ZoneId == stationEntity.ZoneId).ToList();
+            logger.LogInformation($"Found {stationEntities.Count} StationGroups");
+            foreach (var station in stationInGroups)
+            {
+                station.StationGroup = stationEntity.Id;
+                var updateCommand = new UpdateEntityCommand<StationEntity>(station);
+                var me = await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
+                if (!me.IsSuccess)
+                {
+                    logger.LogError($"Update station {station.Code} failed: {re.Message}");
+                }
+            }
+            
         }
         return Result<List<StationEntity>>.Success(stationEntities);
     }
