@@ -31,7 +31,9 @@ public class SyncProductPlugin : IParameterPlugin
         if(!createStationResult.IsSuccess)
             return Result<object?>.Failure(createStationResult.Message, createStationResult.ErrorType);
         await SyncStationGroupsAsync(fieldParams, logger, commandMediator, httpClient, createStationResult.Value, cancellationToken);
-        await SyncDepartmentAsync(fieldParams, logger, commandMediator, httpClient, cancellationToken);
+        var createDepartment = await SyncDepartmentAsync(fieldParams, logger, commandMediator, httpClient, cancellationToken);
+        if (!createDepartment.IsSuccess)
+            return Result<object?>.Failure(createDepartment.Message, createDepartment.ErrorType);
         return Result<object?>.Success(null);
     }
 
@@ -322,7 +324,7 @@ public class SyncProductPlugin : IParameterPlugin
         }
         return Result<List<StationGroupEntity>>.Success(stationGroupEntities);
     }
-
+    
     private static async Task<Result<List<DepartmentEntity>>> SyncDepartmentAsync(FieldParams fieldParams,
         ILogger<SyncProductPlugin> logger,
         ICommandMediator commandMediator, HttpClient httpClient, CancellationToken cancellationToken)
@@ -368,8 +370,12 @@ public class SyncProductPlugin : IParameterPlugin
             {
                 logger.LogError($"Create department {departmentEntity.Code} failed: {re.Message}");
             }
-            UpdateEntityCommand<DepartmentEntity> updateCommand = new UpdateEntityCommand<DepartmentEntity>(departmentEntity);
-            await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
+            else
+            {
+                UpdateEntityCommand<DepartmentEntity> updateCommand = new UpdateEntityCommand<DepartmentEntity>(departmentEntity);
+                await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
+            }
+            
         }
         return Result<List<DepartmentEntity>>.Success(departmentEntities);
     }

@@ -1,7 +1,12 @@
-﻿namespace FourMProductSyncPlugin;
+﻿using MongoDB.Bson;
+using MongoDB.Bson.Serialization.Attributes;
+
+namespace FourMProductSyncPlugin;
 
 public class FixAssetDepartmentModel
 {
+    [BsonId]
+    [BsonRepresentation(BsonType.ObjectId)]
     public string ObjectId { get; set; } = string.Empty;
 
     public string DepartmentCode { get; set; } = string.Empty;
