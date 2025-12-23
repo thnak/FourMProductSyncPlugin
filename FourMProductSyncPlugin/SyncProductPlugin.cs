@@ -30,6 +30,9 @@ public class SyncProductPlugin : IParameterPlugin
         var createStationResult = await SyncStationsAsync(fieldParams, logger, commandMediator, httpClient, createZone.Value, cancellationToken);
         if(!createStationResult.IsSuccess)
             return Result<object?>.Failure(createStationResult.Message, createStationResult.ErrorType);
+        var assetRes = await SyncAssetsAsync(fieldParams, logger, commandMediator, httpClient,  createStationResult.Value, cancellationToken);
+        if (!assetRes.IsSuccess)
+            return Result<object?>.Failure(assetRes.Message, assetRes.ErrorType);
         await SyncStationGroupsAsync(fieldParams, logger, commandMediator, httpClient, createStationResult.Value, cancellationToken);
         var createDepartment = await SyncDepartmentAsync(fieldParams, logger, commandMediator, httpClient, cancellationToken);
         if (!createDepartment.IsSuccess)
@@ -234,7 +237,150 @@ public class SyncProductPlugin : IParameterPlugin
         }
         return Result<List<StationEntity>>.Success(stationEntities);
     }
-    
+
+    private static async Task<Result<List<AssetEntity>>> SyncAssetsAsync(FieldParams fieldParams,
+        ILogger<SyncProductPlugin> logger,
+        ICommandMediator commandMediator, HttpClient httpClient, List<StationEntity> stationEntities,
+        CancellationToken cancellationToken)
+    {
+         var baseUri = fieldParams.TryGet<string>("baseUri");
+        var requestEndpoint = fieldParams.TryGet<string>("requestAssetEndpoint");
+        if (string.IsNullOrEmpty(baseUri))
+        {
+            logger.LogError("Base Uri are empty");
+            return Result<List<AssetEntity>>.Failure("baseUri is empty", ErrorType.InvalidArgument);
+        }
+
+        if (string.IsNullOrEmpty(requestEndpoint))
+        {
+            logger.LogError("requestAssetEndpoint is empty");
+            return Result<List<AssetEntity>>.Failure("requestAssetEndpoint is empty", ErrorType.InvalidArgument);
+        }
+
+        var request = new FluentRequestBuilder(baseUri, httpClient);
+        request.SetApiPatternPath(requestEndpoint).AddJsonConverts([..JsonContextSerial.Default.Options.Converters]);
+        request.OnException(e =>
+        {
+            logger.LogError(e, "Error occurred while fetching products from {RequestEndpoint}", requestEndpoint);
+            return Task.CompletedTask;
+        });
+        var url = $"{baseUri!.TrimEnd('/')}/{requestEndpoint!.TrimStart('/')}";
+
+        HttpResponseMessage res;
+        string body;
+
+        try
+        {
+            res = await httpClient.GetAsync(url, cancellationToken);
+            body = await res.Content.ReadAsStringAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "HTTP error when calling asset endpoint: {Url}", url);
+            return Result<List<AssetEntity>>.Failure($"Asset endpoint HTTP exception: {ex.Message}", ErrorType.ApiError);
+        }
+
+        if (!res.IsSuccessStatusCode)
+        {
+            logger.LogError("Asset endpoint failed. Status={StatusCode}. Url={Url}. Body={Body}",
+                (int)res.StatusCode, url, body);
+            return Result<List<AssetEntity>>.Failure(
+                $"Asset endpoint HTTP {(int)res.StatusCode} {res.ReasonPhrase}",
+                ErrorType.ApiError);
+        }
+
+        List<AssetModel>? getResult;
+        try
+        {
+            var opt = new System.Text.Json.JsonSerializerOptions(JsonContextSerial.Default.Options)
+            {
+                PropertyNameCaseInsensitive = true
+            };
+
+            getResult = System.Text.Json.JsonSerializer.Deserialize<List<AssetModel>>(body, opt);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Asset endpoint JSON deserialize failed. Url={Url}. Body={Body}", url, body);
+            return Result<List<AssetEntity>>.Failure($"Asset JSON deserialize failed: {ex.Message}", ErrorType.ApiError);
+        }
+
+        if (getResult == null)
+        {
+            logger.LogError("Asset endpoint returned null after deserialize. Url={Url}. Body={Body}", url, body);
+            return Result<List<AssetEntity>>.Failure("Asset response is null/invalid", ErrorType.ApiError);
+        }
+
+        
+        var deleteAssetMappingRes = await commandMediator.SendAsync(
+            new DeleteManyEntityCommand<AssetStationMapping>(_ => true),
+            cancellationToken: cancellationToken);
+
+        if (!deleteAssetMappingRes.IsSuccess)
+        {
+            logger.LogError("Failed to delete existing ZoneStationMapping: {Message}",
+                deleteAssetMappingRes.Message);
+        }
+        List<AssetEntity> assetList = new List<AssetEntity>(getResult.Count);
+        foreach (var assetModel in getResult)
+        {
+            var assetEntity = new AssetEntity()
+            {
+                AssetCode = assetModel.AssetCode,
+                AssetName = assetModel.AssetName,
+                Id = ObjectId.Parse(assetModel.ObjectId)
+            };
+            if (!string.IsNullOrWhiteSpace(assetModel.CurrentStation))
+            {
+                var matchedStation = stationEntities
+                    .FirstOrDefault(z =>
+                        string.Equals(z.Code, assetModel.CurrentStation,
+                            StringComparison.OrdinalIgnoreCase));
+
+                if (matchedStation != null)
+                {
+                    assetEntity.CurrentStation = matchedStation.Id;
+                }
+                else
+                {
+                    logger.LogWarning("No Zone found for ZoneCode {ZoneCode} (Station {StationCode})",
+                        assetModel.CurrentStation, assetModel.AssetCode);
+                }
+            }
+            CreateEntityCommand<AssetEntity> createCommand = new CreateEntityCommand<AssetEntity>(assetEntity);
+            var re = await commandMediator.SendAsync(createCommand, cancellationToken: cancellationToken);
+            if (!re.IsSuccess)
+            {
+                logger.LogError($"Create station group {assetEntity.AssetCode} failed: {re.Message}");
+                UpdateEntityCommand<AssetEntity> updateCommand = new UpdateEntityCommand<AssetEntity>(assetEntity);
+                var updateResult = await commandMediator.SendAsync(updateCommand, cancellationToken: cancellationToken);
+                if (!updateResult.IsSuccess)                {
+                    logger.LogError($"Update station group {assetEntity.AssetCode} failed: {updateResult.Message}");
+                }            
+            }
+            assetList.Add(assetEntity);
+            if (assetEntity.CurrentStation != ObjectId.Empty)
+            {
+                var mapping = new AssetStationMapping
+                {
+                    AssetId = assetEntity.Id,
+                    StationId = assetEntity.CurrentStation
+                };
+
+                var mappingCreateCommand = new CreateEntityCommand<AssetStationMapping>(mapping);
+                var mappingResult = await commandMediator.SendAsync(mappingCreateCommand, cancellationToken: cancellationToken);
+                if (!mappingResult.IsSuccess)
+                {
+                    logger.LogError(
+                        "Create mapping for ZoneId {ZoneId} and Station {StationCode} failed: {Message}",
+                        mapping.StationId, assetEntity.AssetCode, mappingResult.Message);
+                }
+            }
+            
+        }
+        return Result<List<AssetEntity>>.Success(assetList);
+    }
+
     private static async Task<Result<List<StationGroupEntity>>> SyncStationGroupsAsync(FieldParams fieldParams, ILogger<SyncProductPlugin> logger,
         ICommandMediator commandMediator, HttpClient httpClient, List<StationEntity> stationEntities, CancellationToken cancellationToken)
     {
@@ -379,4 +525,5 @@ public class SyncProductPlugin : IParameterPlugin
         }
         return Result<List<DepartmentEntity>>.Success(departmentEntities);
     }
+    
 }

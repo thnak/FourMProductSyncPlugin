@@ -9,10 +9,10 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="FourM.Domain" Version="3.4.1.6" />
-      <PackageReference Include="VaultForce.Application" Version="3.4.1.6" />
-      <PackageReference Include="VaultForce.Domain" Version="3.4.1.6" />
-      <PackageReference Include="VaultForce.Infrastructure" Version="3.4.1.6" />
+      <PackageReference Include="FourM.Domain" Version="3.4.1.10" />
+      <PackageReference Include="VaultForce.Application" Version="3.4.1.10" />
+      <PackageReference Include="VaultForce.Domain" Version="3.4.1.10" />
+      <PackageReference Include="VaultForce.Infrastructure" Version="3.4.1.10" />
     </ItemGroup>
 
 </Project>

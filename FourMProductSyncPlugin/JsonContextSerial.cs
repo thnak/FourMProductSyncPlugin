@@ -11,6 +11,10 @@ namespace FourMProductSyncPlugin;
 [JsonSerializable(typeof(StationModel))]
 [JsonSerializable(typeof(List<StationModel>))]
 [JsonSerializable(typeof(StationPlanModel))]
+[JsonSerializable(typeof(AssetModel))]
+[JsonSerializable(typeof(List<AssetModel>))]
+[JsonSerializable(typeof(PartDetailsModel))]
+[JsonSerializable(typeof(List<PartDetailsModel>))]
 [JsonSourceGenerationOptions(WriteIndented = true)]
 public partial class JsonContextSerial : JsonSerializerContext
 {
